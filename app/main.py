@@ -27,8 +27,6 @@ def replLoop():
     cmd, rest = commandIter(commandLineInput)
     if cmd in BUILTINS:
         BUILTINS[cmd](rest)
-    elif cmd =="":
-        pass
     else:
         result = evalute(cmd, rest)
         print(result)
