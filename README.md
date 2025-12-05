@@ -3,6 +3,7 @@
 ## Overview
 
 This project implements a custom shell interpreter capable of:
+
 - Parsing and executing shell commands
 - Running external programs
 - Supporting builtin commands (cd, pwd, echo, type, exit, etc.)
@@ -24,6 +25,7 @@ The shell currently supports the following builtin commands:
 ### Interactive REPL
 
 The shell provides an interactive command-line interface with:
+
 - Command prompt (`$`)
 - Command parsing and execution
 - Error handling for invalid commands
@@ -36,17 +38,20 @@ The shell provides an interactive command-line interface with:
 ## Installation
 
 1. **Clone the repository:**
+
    ```bash
    git clone <repository-url>
    cd shell-python
    ```
 
 2. **Install uv** (if not already installed):
+
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
 3. **Install dependencies:**
+
    ```bash
    uv sync
    ```
@@ -122,12 +127,14 @@ shell-python/
 ### Current Implementation Status
 
 The shell currently implements:
+
 - ✅ Basic REPL loop
 - ✅ Builtin command support (exit, echo, type)
 - ✅ Command parsing
 - ✅ Error handling for invalid commands
 
 Future enhancements may include:
+
 - External program execution
 - Additional builtin commands (cd, pwd, etc.)
 - Piping and redirection
@@ -141,10 +148,13 @@ Future enhancements may include:
 1. Edit `app/main.py` to implement new features
 2. Test locally using `./your_program.sh`
 3. Commit your changes:
+
    ```bash
    git commit -am "your commit message"
    ```
+
 4. Push your changes:
+
    ```bash
    git push origin master
    ```
@@ -152,6 +162,7 @@ Future enhancements may include:
 ### Testing
 
 Test your implementation locally by running the shell and executing various commands. Make sure to test:
+
 - Builtin commands (exit, echo, type)
 - Invalid command handling
 - Command parsing with and without arguments
@@ -168,10 +179,6 @@ Test your implementation locally by running the shell and executing various comm
 ## Contributing
 
 Contributions are welcome! Feel free to fork the repository, make improvements, and submit pull requests.
-
-## License
-
-This project is open source. Please check the repository for license information.
 
 ## Resources
 
