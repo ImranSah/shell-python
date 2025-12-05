@@ -8,7 +8,7 @@ def printMsg(arg):
 def main():
     # TODO: Uncomment the code below to pass the first stage
     sys.stdout.write("$ ")
-    cmdInput = input()
+    cmdInput = input().strip()
 
     printMsg(cmdInput)
 
