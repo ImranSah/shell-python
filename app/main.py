@@ -4,7 +4,7 @@ INVALID_MSG = "command not found"
 NOTFOUND = "not found"
 
 BUILTINS = {
-    "exit": lambda code=0, *_: sys.exit(code),
+    "exit": lambda code=0, *_: sys.exit(),
     "echo": lambda *args: print(" ".join(args)),
     "type" : lambda *args: print(f'{" ".join(args)} is a shell builtin') if len(args)>0 and args[0] in BUILTINS else print(f'{" ".join(args)}: {NOTFOUND}'),
     "invalidCmd":lambda *args: print(f'{" ".join(args)}: {NOTFOUND}')
