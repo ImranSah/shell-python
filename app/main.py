@@ -2,8 +2,17 @@ import sys
 
 INVALID_MSG = "command not found"
 
-def evalute(cmd):
+def commandIter(commandLineInput):
+    if " " in commandLineInput:
+        return commandLineInput.split(" ",1)
+    else:
+        return [commandLineInput,""]
+
+def evalute(commandLineInput):
+    cmd, rest = commandIter(commandLineInput)
     match cmd:
+        case "echo":
+            return rest
         case "exit":
             sys.exit()
         case default:
@@ -11,8 +20,8 @@ def evalute(cmd):
 
 def replLoop():
     sys.stdout.write("$ ")
-    cmd = input().strip()
-    result = evalute(cmd)
+    commandLineInput = input().strip()
+    result = evalute(commandLineInput)
     print(result)
 
 
