@@ -1,34 +1,180 @@
-[![progress-banner](https://backend.codecrafters.io/progress/shell/c5f7145c-c43c-4673-b651-669725f8968a)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Build Your Own Shell - Python Implementation
 
-This is a starting point for Python solutions to the
-["Build Your Own Shell" Challenge](https://app.codecrafters.io/courses/shell/overview).
+## Overview
 
-In this challenge, you'll build your own POSIX compliant shell that's capable of
-interpreting shell commands, running external programs and builtin commands like
-cd, pwd, echo and more. Along the way, you'll learn about shell command parsing,
-REPLs, builtin commands, and more.
+This project implements a custom shell interpreter capable of:
+- Parsing and executing shell commands
+- Running external programs
+- Supporting builtin commands (cd, pwd, echo, type, exit, etc.)
+- Providing an interactive REPL (Read-Eval-Print Loop) interface
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+The shell follows POSIX standards and provides a foundation for understanding how command-line shells work under the hood.
 
-# Passing the first stage
+## Features
 
-The entry point for your `shell` implementation is in `app/main.py`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
+### Builtin Commands
 
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+The shell currently supports the following builtin commands:
+
+- **`exit`**: Terminates the shell session
+- **`echo`**: Prints arguments to stdout
+- **`type`**: Displays information about whether a command is a builtin or external program
+- **`invalidCmd`**: Handles invalid command errors
+
+### Interactive REPL
+
+The shell provides an interactive command-line interface with:
+- Command prompt (`$`)
+- Command parsing and execution
+- Error handling for invalid commands
+
+## Requirements
+
+- Python 3.14 or higher
+- [uv](https://github.com/astral-sh/uv) - Fast Python package installer and resolver
+
+## Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd shell-python
+   ```
+
+2. **Install uv** (if not already installed):
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   uv sync
+   ```
+
+## Usage
+
+### Running Locally
+
+To run the shell locally, use the provided script:
+
+```bash
+./your_program.sh
 ```
 
-Time to move on to the next stage!
+This will start an interactive shell session. You can then enter commands:
 
-# Stage 2 & beyond
+```bash
+$ echo Hello, World!
+Hello, World!
+$ type echo
+echo is a shell builtin
+$ exit
+```
 
-Note: This section is for stages 2 and beyond.
+### Running with Python
 
-1. Ensure you have `uv` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `app/main.py`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+Alternatively, you can run the shell directly using Python:
+
+```bash
+uv run --quiet -m app.main
+```
+
+Or using Python directly:
+
+```bash
+python -m app.main
+```
+
+## Project Structure
+
+```
+shell-python/
+├── app/
+│   ├── __pycache__/      # Python bytecode cache
+│   └── main.py           # Main shell implementation
+├── pyproject.toml        # Python project configuration
+├── README.md             # This file
+├── uv.lock               # Dependency lock file
+└── your_program.sh       # Local execution script
+```
+
+## Implementation Details
+
+### Core Components
+
+1. **REPL Loop** (`replLoop()`)
+   - Displays the command prompt
+   - Reads user input
+   - Parses and executes commands
+
+2. **Command Iterator** (`commandIter()`)
+   - Splits command line input into command and arguments
+   - Handles commands with or without arguments
+
+3. **Builtin Commands** (`BUILTINS` dictionary)
+   - Maps builtin command names to their handler functions
+   - Provides fast lookup for builtin commands
+
+4. **Command Evaluator** (`evalute()`)
+   - Handles execution of non-builtin commands
+   - Returns error messages for invalid commands
+
+### Current Implementation Status
+
+The shell currently implements:
+- ✅ Basic REPL loop
+- ✅ Builtin command support (exit, echo, type)
+- ✅ Command parsing
+- ✅ Error handling for invalid commands
+
+Future enhancements may include:
+- External program execution
+- Additional builtin commands (cd, pwd, etc.)
+- Piping and redirection
+- Environment variable support
+- Command history
+
+## Development Workflow
+
+### Making Changes
+
+1. Edit `app/main.py` to implement new features
+2. Test locally using `./your_program.sh`
+3. Commit your changes:
+   ```bash
+   git commit -am "your commit message"
+   ```
+4. Push your changes:
+   ```bash
+   git push origin master
+   ```
+
+### Testing
+
+Test your implementation locally by running the shell and executing various commands. Make sure to test:
+- Builtin commands (exit, echo, type)
+- Invalid command handling
+- Command parsing with and without arguments
+
+## Configuration
+
+### Python Project Configuration (`pyproject.toml`)
+
+- **Project name**: `shell-python`
+- **Version**: `0.1.0`
+- **Python requirement**: `>=3.14`
+- **Dependencies**: None (pure Python implementation)
+
+## Contributing
+
+Contributions are welcome! Feel free to fork the repository, make improvements, and submit pull requests.
+
+## License
+
+This project is open source. Please check the repository for license information.
+
+## Resources
+
+- [POSIX Shell Specification](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html)
+- [Python Documentation](https://docs.python.org/3/)
+- [uv Documentation](https://github.com/astral-sh/uv)
