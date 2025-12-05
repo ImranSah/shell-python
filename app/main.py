@@ -1,10 +1,13 @@
 import sys
 
 INVALID_MSG = "command not found"
+NOTFOUND = "not found"
 
 BUILTINS = {
     "exit": lambda code=0, *_: sys.exit(code),
-    "echo": lambda *args: print(" ".join(args))
+    "echo": lambda *args: print(" ".join(args)),
+    "type" : lambda *args: print(f'{" ".join(args)} is a shell builtin') if len(args)>0 and args[0] in BUILTINS else print(f'{" ".join(args)}: {NOTFOUND}'),
+    "invalidCmd":lambda *args: print(f'{" ".join(args)}: {NOTFOUND}')
 }
 
 def commandIter(commandLineInput):
@@ -24,6 +27,8 @@ def replLoop():
     cmd, rest = commandIter(commandLineInput)
     if cmd in BUILTINS:
         BUILTINS[cmd](rest)
+    elif cmd =="":
+        pass
     else:
         result = evalute(cmd, rest)
         print(result)
