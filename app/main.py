@@ -9,7 +9,6 @@ def main():
     # TODO: Uncomment the code below to pass the first stage
     sys.stdout.write("$ ")
     cmdInput = input()
-    cmdInput = cmdInput.strip()
 
     printMsg(cmdInput)
 
