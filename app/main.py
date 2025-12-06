@@ -15,7 +15,7 @@ def commandIter(commandLineInput):
         in_quotes = shlex.split(rest)
         return [split_command, in_quotes]
     else:
-        return [commandLineInput,""]
+        return [commandLineInput,[]]
 
 # execute external command
 def externalCommand(cmd, rest):
