@@ -41,7 +41,8 @@ def evalute(cmd, rest):
         case _:
             result = externalCommand(cmd, rest)
             if result is not None:
-                return result
+                # remove the last newline character
+                return result.rstrip('\n')
             else:
                 return f'{cmd}: {INVALID_MSG}'
 
