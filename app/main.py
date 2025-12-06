@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 
 INVALID_MSG = "command not found"
@@ -12,6 +13,13 @@ def commandIter(commandLineInput):
     else:
         return [commandLineInput,""]
 
+# execute external command
+def externalCommand(cmd, rest):
+    for d in os.environ["PATH"].split(os.pathsep):
+        p = os.path.join(d, cmd)
+        if os.access(p, os.X_OK):
+            return subprocess.run(f'{cmd} {rest}', shell=True, capture_output=True, text=True).stdout
+    return None
 # Evaluate the command and return the result
 def evalute(cmd, rest):
     match cmd:
@@ -31,7 +39,11 @@ def evalute(cmd, rest):
                 # if not found, return not found
                 return f'{rest}: {NOTFOUND}'
         case _:
-            return f'{cmd}: {INVALID_MSG}'
+            result = externalCommand(cmd, rest)
+            if result is not None:
+                return result
+            else:
+                return f'{cmd}: {INVALID_MSG}'
 
 # Main loop for the shell
 def replLoop():
