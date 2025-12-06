@@ -19,8 +19,11 @@ The shell currently supports the following builtin commands:
 
 - **`exit`**: Terminates the shell session
 - **`echo`**: Prints arguments to stdout
-- **`type`**: Displays information about whether a command is a builtin or external program
-- **`invalidCmd`**: Handles invalid command errors
+- **`type`**: Displays information about whether a command is a builtin or external program, including the full path for external programs
+
+### External Program Execution
+
+The shell can execute external programs by searching through the directories in the `PATH` environment variable. When a command is not a builtin, the shell searches for an executable file with that name in the system PATH.
 
 ### Interactive REPL
 
@@ -73,6 +76,10 @@ $ echo Hello, World!
 Hello, World!
 $ type echo
 echo is a shell builtin
+$ type ls
+ls is /usr/bin/ls
+$ ls
+file1.txt  file2.txt  README.md
 $ exit
 ```
 
@@ -108,38 +115,47 @@ shell-python/
 ### Core Components
 
 1. **REPL Loop** (`replLoop()`)
-   - Displays the command prompt
+   - Displays the command prompt (`$`)
    - Reads user input
    - Parses and executes commands
+   - Prints command results
 
 2. **Command Iterator** (`commandIter()`)
    - Splits command line input into command and arguments
    - Handles commands with or without arguments
+   - Returns a list with command and remaining arguments
 
-3. **Builtin Commands** (`BUILTINS` dictionary)
-   - Maps builtin command names to their handler functions
-   - Provides fast lookup for builtin commands
+3. **Command Evaluator** (`evalute()`)
+   - Uses pattern matching to handle builtin commands (exit, echo, type)
+   - Executes external commands via `externalCommand()`
+   - Returns appropriate error messages for invalid commands
+   - Handles command output formatting
 
-4. **Command Evaluator** (`evalute()`)
-   - Handles execution of non-builtin commands
-   - Returns error messages for invalid commands
+4. **External Command Executor** (`externalCommand()`)
+   - Searches for executables in directories listed in the `PATH` environment variable
+   - Executes external programs using `subprocess`
+   - Returns command output or `None` if command not found
 
 ### Current Implementation Status
 
 The shell currently implements:
 
-- ✅ Basic REPL loop
+- ✅ Basic REPL loop with interactive command prompt
 - ✅ Builtin command support (exit, echo, type)
-- ✅ Command parsing
+- ✅ Command parsing and argument handling
+- ✅ External program execution via PATH searching
 - ✅ Error handling for invalid commands
+- ✅ Command type detection (builtin vs external)
+- ✅ Output formatting and newline handling
 
 Future enhancements may include:
 
-- External program execution
 - Additional builtin commands (cd, pwd, etc.)
-- Piping and redirection
-- Environment variable support
+- Piping and redirection (`|`, `>`, `>>`, `<`)
+- Environment variable expansion
 - Command history
+- Background process execution
+- Signal handling
 
 ## Development Workflow
 
@@ -164,8 +180,10 @@ Future enhancements may include:
 Test your implementation locally by running the shell and executing various commands. Make sure to test:
 
 - Builtin commands (exit, echo, type)
+- External program execution (ls, cat, pwd, etc.)
 - Invalid command handling
 - Command parsing with and without arguments
+- The `type` command with both builtin and external commands
 
 ## Configuration
 
@@ -174,7 +192,7 @@ Test your implementation locally by running the shell and executing various comm
 - **Project name**: `shell-python`
 - **Version**: `0.1.0`
 - **Python requirement**: `>=3.14`
-- **Dependencies**: None (pure Python implementation)
+- **Dependencies**: Uses Python standard library modules (`os`, `subprocess`, `sys`)
 
 ## Contributing
 
