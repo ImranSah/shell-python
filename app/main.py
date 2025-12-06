@@ -31,7 +31,7 @@ def evalute(cmd, rest):
                 # if not found, return not found
                 return f'{rest}: {NOTFOUND}'
         case _:
-            return f'{rest}: {INVALID_MSG}'
+            return f'{cmd}: {INVALID_MSG}'
 
 # Main loop for the shell
 def replLoop():
