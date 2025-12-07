@@ -11,18 +11,16 @@ BUILTINS_LIST = ["exit", "echo", "type"]
 def commandIter(commandLineInput):
     if " " in commandLineInput:
         split_command, rest = commandLineInput.split(" ",1)
-        # split the rest into a list of strings, preserving quotes
-        in_quotes = shlex.split(rest)
-        return [split_command, in_quotes]
+        return [split_command, rest]
     else:
-        return [commandLineInput,[]]
+        return [commandLineInput,""]
 
 # execute external command
 def externalCommand(cmd, rest):
     for d in os.environ["PATH"].split(os.pathsep):
         p = os.path.join(d, cmd)
         if os.access(p, os.X_OK):
-            return subprocess.run(f'{cmd} {" ".join(rest)}', shell=True, capture_output=True, text=True).stdout
+            return subprocess.run(f'{cmd} {rest}', shell=True, capture_output=True, text=True).stdout
     return None
 
 # Evaluate the command and return the result
@@ -31,18 +29,19 @@ def evalute(cmd, rest):
         case "exit":
             sys.exit()
         case "echo":
-            return f'{" ".join(rest)}'
+            in_quotes = shlex.split(rest)
+            return f'{" ".join(in_quotes)}'
         case "type":
             if rest in BUILTINS_LIST:
-                return f'{" ".join(rest)} is a shell builtin'
+                return f'{rest} is a shell builtin'
             else:
                 for d in os.environ["PATH"].split(os.pathsep):
-                    p = os.path.join(d, " ".join(rest))
+                    p = os.path.join(d, rest)
                     if os.access(p, os.X_OK):
-                        return f'{" ".join(rest)} is {p}'
+                        return f'{rest} is {p}'
 
                 # if not found, return not found
-                return f'{" ".join(rest)}: {NOTFOUND}'
+                return f'{rest}: {NOTFOUND}'
         case _:
             result = externalCommand(cmd, rest)
             if result is not None:
