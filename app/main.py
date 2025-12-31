@@ -5,6 +5,7 @@ import sys
 import glob
 
 EXTERNAL_CACHE = {}
+COMMAND_HISTORY = []
 
 
 def findExec(cmd):
@@ -68,6 +69,31 @@ def builtInCD(args):
         print(f"{args[0]}: {args[1]}: No such file or directory")
 
 
+def builtInHistory(args):
+    # Check if a limit argument is provided
+    limit = None
+    if len(args) > 1:
+        try:
+            limit = int(args[1])
+        except ValueError:
+            print(f"history: {args[1]}: numeric argument required", file=sys.stderr)
+            return
+
+    # Get the commands to display
+    if limit is not None:
+        # Show last n commands
+        commands_to_show = COMMAND_HISTORY[-limit:] if limit > 0 else []
+        start_index = len(COMMAND_HISTORY) - len(commands_to_show) + 1
+    else:
+        # Show all commands
+        commands_to_show = COMMAND_HISTORY
+        start_index = 1
+
+    # Print commands with their original indices
+    for i, cmd in enumerate(commands_to_show, start=start_index):
+        print(f"    {i}  {cmd}")
+
+
 # ---------------- Pipeline Execution ---------------- #
 
 
@@ -129,7 +155,7 @@ def execute_pipeline(stages):
             # External command
             exec_path = findExec(args[0])
             if not exec_path:
-                print(f"{args[0]}: not found", file=sys.stderr)
+                print(f"{args[0]}: command not found", file=sys.stderr)
                 continue
 
             pid = os.fork()
@@ -264,7 +290,7 @@ def execute_command(args):
             if f_stderr:
                 f_stderr.close()
     else:
-        print(f"{args[0]}: not found", file=sys.stderr)
+        print(f"{args[0]}: command not found", file=sys.stderr)
 
 
 # ---------------- Command Parsing ---------------- #
@@ -372,6 +398,7 @@ BUILTINS = {
     "type": builtInType,
     "pwd": builtInPWD,
     "cd": builtInCD,
+    "history": builtInHistory,
 }
 
 # ---------------- Autocompletion --------------#
@@ -518,6 +545,10 @@ def main():
 
         if not command:
             continue
+
+        # Add command to history
+        COMMAND_HISTORY.append(command)
+        readline.add_history(command)
 
         # Check if command contains pipeline
         stages = parse_pipeline(command)
