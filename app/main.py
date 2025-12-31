@@ -162,9 +162,6 @@ def execute_command(command_line):
     if cmd_name is None:
         return None
 
-    if ">" in command_line or "1>" in command_line:
-        return os.system(command_line)
-
     if cmd_name in BUILTINS:
         return BUILTINS[cmd_name](args)
 
@@ -187,6 +184,10 @@ def main():
             sys.stdout.flush()
 
             command = input()
+
+            if ">" in command or "1>" in command:
+                os.system(command)
+                continue
 
             output = execute_command(command)
 
