@@ -3,8 +3,6 @@ import readline
 import subprocess
 import sys
 
-from app.main import BUILTINS_LIST
-
 EXTERNAL_CACHE = {}
 
 
@@ -23,6 +21,7 @@ def findExec(cmd):
 
     EXTERNAL_CACHE[cmd] = None
     return None
+
 
 # ---------------- Builtins ---------------- #
 
@@ -56,9 +55,9 @@ def builtInPWD(args):
 
 
 def builtInCD(args):
-    if len(args) < 2 or args[1] == '~':
+    if len(args) < 2 or args[1] == "~":
         try:
-            os.chdir(os.getenv('HOME'))
+            os.chdir(os.getenv("HOME"))
         except Exception:
             print(f"{args[0]}: could not change directory")
         return
@@ -66,6 +65,7 @@ def builtInCD(args):
         os.chdir(args[1])
     except FileNotFoundError:
         print(f"{args[0]}: {args[1]}: No such file or directory")
+
 
 # ---------------- Command Execution ---------------- #
 
@@ -159,7 +159,7 @@ def execute_command(args):
                 [args[0]] + args[1:],
                 executable=exec_path,
                 stdout=f_stdout,
-                stderr=f_stderr
+                stderr=f_stderr,
             )
         except Exception as e:
             print(f"Error running {args[0]}: {e}", file=sys.stderr)
@@ -170,6 +170,7 @@ def execute_command(args):
                 f_stderr.close()
     else:
         print(f"{args[0]}: not found", file=sys.stderr)
+
 
 # ---------------- Command Parsing ---------------- #
 
@@ -193,7 +194,7 @@ def parse_command(command):
 
         # Backslash inside double quotes (only escapes " and \)
         elif ch == "\\" and in_double_quote:
-            if i + 1 < len(command) and command[i + 1] in ['"', '\\']:
+            if i + 1 < len(command) and command[i + 1] in ['"', "\\"]:
                 i += 1
                 current.append(command[i])
             else:
@@ -238,9 +239,9 @@ BUILTINS = {
 
 
 def auto_complete(text, state):
-    matches = [
-        command + " " for command in BUILTINS.keys() if command.startswith(text)]
+    matches = [command + " " for command in BUILTINS.keys() if command.startswith(text)]
     return matches[state] if state < len(matches) else None
+
 
 # ---------------- Main Loop ---------------- #
 
