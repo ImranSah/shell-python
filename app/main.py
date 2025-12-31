@@ -1,6 +1,9 @@
 import os
+import readline
 import subprocess
 import sys
+
+from app.main import BUILTINS_LIST
 
 EXTERNAL_CACHE = {}
 
@@ -231,10 +234,20 @@ BUILTINS = {
     "cd": builtInCD,
 }
 
+# ---------------- Autocompletion --------------#
+
+
+def auto_complete(text, state):
+    matches = [
+        command + " " for command in BUILTINS.keys if command.startswith(text)]
+    return matches[state] if state < len(matches) else None
+
 # ---------------- Main Loop ---------------- #
 
 
 def main():
+    readline.set_completer(auto_complete)
+    readline.parse_and_bind("tab: complete")
     while True:
         try:
             sys.stdout.write("$ ")
