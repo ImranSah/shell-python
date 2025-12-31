@@ -269,10 +269,10 @@ def get_longest_common_prefix(strings):
 def auto_complete(text, state):
     matches = []
 
-    # Builtin commands first
+    # Builtin commands first (no trailing space to keep display spacing consistent)
     for command in BUILTINS.keys():
         if command.startswith(text):
-            matches.append(command + " ")
+            matches.append(command)
 
     # External commands from PATH (deduplicated)
     seen = set(BUILTINS.keys())
@@ -287,7 +287,7 @@ def auto_complete(text, state):
                     continue
                 full_path = os.path.join(path, name)
                 if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-                    matches.append(name + " ")
+                    matches.append(name)
                     seen.add(name)
         except PermissionError:
             # Ignore directories we can't access
