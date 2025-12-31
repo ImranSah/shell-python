@@ -313,38 +313,50 @@ def auto_complete(text, state):
 
         # No matches
         if not last_tab_matches:
+            last_tab_count = 0
             return None
 
-        # Single match - add space
+        # Single match - complete with trailing space
         if len(last_tab_matches) == 1:
             if state == 0:
                 return last_tab_matches[0] + " "
             return None
 
-        # Multiple matches
+        # Multiple matches - try to complete to longest common prefix immediately
+        longest_prefix = get_longest_common_prefix(last_tab_matches)
+        if len(longest_prefix) > len(text):
+            # If completing yields a single exact match, add trailing space
+            # (e.g., when only one candidate remains after completion)
+            remaining = [m for m in last_tab_matches if m.startswith(longest_prefix)]
+            if len(remaining) == 1 and state == 0:
+                return remaining[0] + " "
+            if state == 0:
+                return longest_prefix
+            return None
+
+        # If LCP doesn't extend the text, fall back to bell/list behavior
         if last_tab_count == 0:
-            # First tab press - increment counter, ring bell, return the text
             last_tab_count += 1
             if state == 0:
                 sys.stdout.write("\a")  # Ring bell
                 sys.stdout.flush()
                 return text
             return None
-        else:
-            # Second tab press - display all matches
+
+        # Second tab press - display all matches
+        if last_tab_count == 1:
             if state == 0:
                 print()  # New line
                 print("  ".join(last_tab_matches))
+                # Reprint prompt and current text (include leading "$ ")
                 sys.stdout.write(f"$ {text}")
                 sys.stdout.flush()
+                last_tab_count = 2
                 return text
-
-            # Complete to longest common prefix
-            longest_prefix = get_longest_common_prefix(last_tab_matches)
-            if len(longest_prefix) > len(text) and state == 0:
-                return longest_prefix
-
             return None
+
+        # Subsequent tabs: try to cycle through matches
+        return last_tab_matches[state] if state < len(last_tab_matches) else None
 
     # Multiple word completion (not implemented yet)
     if state == 0:
