@@ -2,6 +2,7 @@ import os
 import readline
 import subprocess
 import sys
+import glob
 
 EXTERNAL_CACHE = {}
 
@@ -242,6 +243,35 @@ last_tab_matches = []
 last_tab_count = 0
 
 
+def get_executable_matches(text):
+    """Find all executables in PATH that match the given prefix."""
+    matches = []
+
+    # First, check builtins
+    for cmd in BUILTINS.keys():
+        if cmd.startswith(text):
+            matches.append(cmd)
+
+    # Then check executables in PATH
+    path_dirs = os.environ.get("PATH", "").split(":")
+    for dir_path in path_dirs:
+        if not dir_path:
+            continue
+
+        # Use glob to find all files in the directory
+        try:
+            for file_path in glob.glob(os.path.join(dir_path, "*")):
+                if os.path.isfile(file_path) and os.access(file_path, os.X_OK):
+                    cmd_name = os.path.basename(file_path)
+                    if cmd_name.startswith(text) and cmd_name not in matches:
+                        matches.append(cmd_name)
+        except Exception:
+            # Skip directories we can't access
+            pass
+
+    return sorted(matches)
+
+
 def get_longest_common_prefix(strings):
     """Get the longest common prefix of a list of strings."""
     if not strings:
@@ -267,45 +297,59 @@ def get_longest_common_prefix(strings):
 
 
 def auto_complete(text, state):
-    matches = []
+    """Custom tab completion function for readline."""
+    global last_tab_text, last_tab_matches, last_tab_count
 
-    # Builtin commands first (no trailing space to keep display spacing consistent)
-    for command in BUILTINS.keys():
-        if command.startswith(text):
-            matches.append(command)
+    # Split the line to get the current command/args
+    line = readline.get_line_buffer()
 
-    # External commands from PATH (deduplicated)
-    seen = set(BUILTINS.keys())
-    for path in os.environ.get("PATH", "").split(os.pathsep):
-        if not os.path.isdir(path):
-            continue
-        try:
-            for name in os.listdir(path):
-                if not name.startswith(text):
-                    continue
-                if name in seen:
-                    continue
-                full_path = os.path.join(path, name)
-                if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-                    matches.append(name)
-                    seen.add(name)
-        except PermissionError:
-            # Ignore directories we can't access
-            continue
+    # First word (command) completion
+    if not line.strip() or " " not in line.lstrip():
+        # New completion attempt or different text
+        if text != last_tab_text:
+            last_tab_text = text
+            last_tab_matches = get_executable_matches(text)
+            last_tab_count = 0
 
-    if not matches:
-        return None
+        # No matches
+        if not last_tab_matches:
+            return None
 
-    # Compute longest common prefix from the names (without trailing spaces)
-    stripped = [m.rstrip() for m in matches]
-    longest_prefix = get_longest_common_prefix(stripped)
+        # Single match - add space
+        if len(last_tab_matches) == 1:
+            if state == 0:
+                return last_tab_matches[0] + " "
+            return None
 
-    # If there is a longer common prefix, return it for the first completion step
-    if len(longest_prefix) > len(text) and state == 0:
-        return longest_prefix
+        # Multiple matches
+        if last_tab_count == 0:
+            # First tab press - increment counter, ring bell, return the text
+            last_tab_count += 1
+            if state == 0:
+                sys.stdout.write("\a")  # Ring bell
+                sys.stdout.flush()
+                return text
+            return None
+        else:
+            # Second tab press - display all matches
+            if state == 0:
+                print()  # New line
+                print("  ".join(last_tab_matches))
+                sys.stdout.write(f"$ {text}")
+                sys.stdout.flush()
+                return text
 
-    # Otherwise return the Nth match for the given state
-    return matches[state] if state < len(matches) else None
+            # Complete to longest common prefix
+            longest_prefix = get_longest_common_prefix(last_tab_matches)
+            if len(longest_prefix) > len(text) and state == 0:
+                return longest_prefix
+
+            return None
+
+    # Multiple word completion (not implemented yet)
+    if state == 0:
+        return text
+    return None
 
 
 # ---------------- Main Loop ---------------- #
