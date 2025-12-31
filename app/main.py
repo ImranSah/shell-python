@@ -14,7 +14,6 @@ from enum import Enum
 from typing import Optional
 from io import StringIO
 
-
 # =====================================================================
 # TAB COMPLETER
 # =====================================================================
