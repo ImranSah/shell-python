@@ -149,7 +149,48 @@ def execute_command(args):
                 sys.stderr = old_stderr
         return
 
-    # ----- External commands ----- #
+    # ----- External commands (including simple pipelines) ----- #
+    # Handle simple single-pipe pipelines: cmd1 args... | cmd2 args...
+    if "|" in args:
+        # Only support a single pipe for now
+        try:
+            pipe_index = args.index("|")
+            left = args[:pipe_index]
+            right = args[pipe_index + 1 :]
+            if not left or not right:
+                print("syntax error: invalid pipe", file=sys.stderr)
+                return
+
+            # Ensure both left and right commands are external (not builtins)
+            if left[0] in BUILTINS or right[0] in BUILTINS:
+                # For simplicity, do not support builtins in pipelines
+                print("pipe with builtin not supported", file=sys.stderr)
+                return
+
+            f_stdout = open(stdout_file, stdout_mode) if stdout_file else None
+            f_stderr = open(stderr_file, stderr_mode) if stderr_file else None
+
+            # Start left process with stdout piped
+            p1 = subprocess.Popen(left, stdout=subprocess.PIPE)
+            try:
+                # Start right process with stdin from p1.stdout
+                p2 = subprocess.Popen(right, stdin=p1.stdout, stdout=f_stdout, stderr=f_stderr)
+                # Close p1.stdout in parent so p1 receives SIGPIPE if p2 exits
+                p1.stdout.close()
+                # Wait for p2 to finish; this will allow tail -f | head -n 5 behavior
+                p2.wait()
+            finally:
+                # Ensure p1 is reaped
+                p1.wait()
+                if f_stdout:
+                    f_stdout.close()
+                if f_stderr:
+                    f_stderr.close()
+        except Exception as e:
+            print(f"Error running pipeline: {e}", file=sys.stderr)
+        return
+
+    # Non-pipeline external command
     exec_path = findExec(args[0])
     if exec_path:
         try:
