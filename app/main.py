@@ -162,6 +162,9 @@ def execute_command(command_line):
     if cmd_name is None:
         return None
 
+    if ">" in command_line or "1>" in command_line:
+        return os.system(command_line)
+
     if cmd_name in BUILTINS:
         return BUILTINS[cmd_name](args)
 
@@ -169,7 +172,8 @@ def execute_command(command_line):
     found_path = find_executable(cmd_name)
     if found_path:
         try:
-            subprocess.run([cmd_name] + args, executable=found_path, check=True)
+            subprocess.run([cmd_name] + args,
+                           executable=found_path, check=True)
         except subprocess.CalledProcessError as e:
             return f"Error executing command: {e}"
     else:
