@@ -1047,17 +1047,17 @@ class HistoryCommand(Command):
             return
 
         if arg == '-r':
-            # Read history from file
+            # Read history from file (append to existing history)
             hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
             try:
                 with open(hist_file, 'r', encoding='utf-8') as f:
-                    self.shell.command_history.clear()
                     for line in f:
                         line = line.rstrip('\n')
-                        if line:
+                        if line.strip():  # Skip empty lines
                             self.shell.command_history.append(line)
+                            readline.add_history(line)
             except FileNotFoundError:
-                pass
+                print(f'history: {hist_file}: No such file or directory', file=sys.stderr)
             except Exception as e:
                 print(f'history: cannot read from {hist_file}: {e}', file=sys.stderr)
             return
