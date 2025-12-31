@@ -537,9 +537,7 @@ def main():
     readline.parse_and_bind("tab: complete")
     while True:
         try:
-            sys.stdout.write("$ ")
-            sys.stdout.flush()
-            command = input().strip()
+            command = input("$ ").strip()
         except EOFError:
             break
 
