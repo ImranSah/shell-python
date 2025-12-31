@@ -239,7 +239,16 @@ BUILTINS = {
 
 
 def auto_complete(text, state):
-    matches = [command + " " for command in BUILTINS.keys() if command.startswith(text)]
+    matches = [command + " " for command in BUILTINS.keys()
+               if command.startswith(text)]
+    # custom executables autocompletion
+    for path in os.environ["PATH"].split(os.pathsep):
+        if os.path.isdir(path):
+            for file in os.listdir(path):
+                if file.startswith(text) and os.access(
+                    os.path.join(path, file), os.X_OK
+                ):
+                    matches.append(file + " ")
     return matches[state] if state < len(matches) else None
 
 
