@@ -1189,6 +1189,9 @@ class Shell:
         # Setup readline history for arrow key navigation
         self._setup_readline_history()
 
+        # Load history from HISTFILE if set
+        self._load_history_from_env()
+
     def _setup_readline_history(self) -> None:
         """Initialize readline with manual history management."""
         # Try to disable auto-history if available (Python 3.10+)
@@ -1199,6 +1202,23 @@ class Shell:
             pass
         # Set history length to store many entries
         readline.set_history_length(500)
+
+    def _load_history_from_env(self) -> None:
+        """Load history from $HISTFILE if set."""
+        histfile = os.getenv('HISTFILE')
+        if histfile and os.path.exists(histfile):
+            try:
+                with open(histfile, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if line.strip():  # Skip empty lines
+                            self.command_history.append(line)
+                            readline.add_history(line)
+                # Track that we've read from this file
+                self.history_file_positions[histfile] = len(self.command_history)
+            except Exception:
+                # Silently ignore errors loading history file on startup
+                pass
 
     def execute(self, command_line: str) -> None:
         """Parse and execute a command line."""
