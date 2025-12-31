@@ -1042,6 +1042,8 @@ class HistoryCommand(Command):
                 with open(hist_file, 'w', encoding='utf-8') as f:
                     for cmd in self.shell.command_history:
                         f.write(cmd + '\n')
+                # Track that we've written all history to this file
+                self.shell.history_file_positions[hist_file] = len(self.shell.command_history)
             except Exception as e:
                 print(f'history: cannot write to {hist_file}: {e}', file=sys.stderr)
             return
@@ -1051,11 +1053,14 @@ class HistoryCommand(Command):
             hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
             try:
                 with open(hist_file, 'r', encoding='utf-8') as f:
+                    start_pos = len(self.shell.command_history)
                     for line in f:
                         line = line.rstrip('\n')
                         if line.strip():  # Skip empty lines
                             self.shell.command_history.append(line)
                             readline.add_history(line)
+                    # Track that we've read up to current position from this file
+                    self.shell.history_file_positions[hist_file] = len(self.shell.command_history)
             except FileNotFoundError:
                 print(f'history: {hist_file}: No such file or directory', file=sys.stderr)
             except Exception as e:
@@ -1063,12 +1068,19 @@ class HistoryCommand(Command):
             return
 
         if arg == '-a':
-            # Append history to file
+            # Append new history to file (only commands since last -r/-w/-a on this file)
             hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
             try:
+                # Get the position where we last synchronized with this file
+                last_pos = self.shell.history_file_positions.get(hist_file, 0)
+
+                # Only append commands that are new since last sync
                 with open(hist_file, 'a', encoding='utf-8') as f:
-                    for cmd in self.shell.command_history:
+                    for cmd in self.shell.command_history[last_pos:]:
                         f.write(cmd + '\n')
+
+                # Update tracking position
+                self.shell.history_file_positions[hist_file] = len(self.shell.command_history)
             except Exception as e:
                 print(f'history: cannot append to {hist_file}: {e}', file=sys.stderr)
             return
@@ -1147,6 +1159,7 @@ class Shell:
         self.path = os.getenv('PATH', '')
         self.home = os.getenv('HOME') or os.getenv('HOMEPATH') or os.getenv('USERPROFILE')
         self.command_history: list[str] = []
+        self.history_file_positions: dict[str, int] = {}  # Track last written position per file
 
         # Initialize built-in commands (TypeCommand needs self.commands, so we initialize it after)
         self.commands: dict[str, Command] = {
