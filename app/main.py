@@ -1,567 +1,1270 @@
 import os
-import readline
 import subprocess
+import shlex
+import contextlib
 import sys
-import glob
-
-EXTERNAL_CACHE = {}
-COMMAND_HISTORY = []
-
-
-def findExec(cmd):
-    if cmd in EXTERNAL_CACHE:
-        return EXTERNAL_CACHE[cmd]
-
-    path_env = os.environ.get("PATH", "")
-    directories = path_env.split(os.pathsep)
-
-    for directory in directories:
-        full_path = os.path.join(directory, cmd)
-        if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
-            EXTERNAL_CACHE[cmd] = full_path
-            return full_path
-
-    EXTERNAL_CACHE[cmd] = None
-    return None
+import shutil
+import stat
+import readline
+import threading
+import time
+import queue
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Optional
+from io import StringIO
 
 
-# ---------------- Builtins ---------------- #
+# =====================================================================
+# TAB COMPLETER
+# =====================================================================
+
+class TabCompleter:
+    """Handle readline tab completion for shell commands and executables."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.matches: list[str] = []
+        self.count: int = 0
+        self.last_text: str = ''
+
+    def get_executable_paths(self, text: str) -> list[str]:
+        """Get list of commands and executables matching text."""
+        matches = [cmd.value + ' ' for cmd in ShellCommandType if cmd.value.startswith(text)]
+        for path in self.path.split(os.pathsep):
+            if not os.path.isdir(path):
+                continue
+            try:
+                for file in os.listdir(path):
+                    if file.startswith(text) and os.access(
+                        os.path.join(path, file), os.X_OK
+                    ):
+                        matches.append(file + ' ')
+            except (PermissionError, OSError):
+                continue
+        return matches
+
+    def completer(self, text: str, state: int) -> Optional[str]:
+        """Readline completer function."""
+        if self.last_text != text:
+            self.matches = sorted(set(self.get_executable_paths(text)))
+            self.count = 0
+            self.last_text = text
+
+        if not self.matches:
+            return None
+
+        # Single match: auto-complete on first TAB press
+        if len(self.matches) == 1:
+            if state == 0:
+                self.count += 1
+                return self.matches[0]
+            return None
+
+        # Multiple matches
+        matches_ns = [m.rstrip() for m in self.matches]
+        common = os.path.commonprefix(matches_ns)
+        if len(common) > len(text):
+            if state == 0:
+                return common
+            return None
+
+        # Show bell then candidates
+        if self.count == 0:
+            sys.stdout.write('\x07')
+            sys.stdout.flush()
+            self.count = 1
+            return None
+        elif self.count == 1 and state == 0:
+            sys.stdout.write('\n')
+            matches_str = ' '.join(sorted(self.matches))
+            sys.stdout.write(matches_str + '\n')
+            sys.stdout.write('$ ')
+            sys.stdout.write(readline.get_line_buffer())
+            sys.stdout.flush()
+            self.count = 0
+            return None
+
+        if state < len(self.matches):
+            return self.matches[state] + ' '
+        sys.stdout.write('\x07')
+
+        return None
 
 
-def builtInExit(args):
-    raise SystemExit
+# =====================================================================
+# COMMAND TYPES ENUM
+# =====================================================================
+
+class ShellCommandType(Enum):
+    """Built-in shell command types."""
+    EXIT = 'exit'
+    ECHO = 'echo'
+    TYPE = 'type'
+    PWD = 'pwd'
+    CD = 'cd'
+    CAT = 'cat'
+    LS = 'ls'
+    WC = 'wc'
+    HEAD = 'head'
+    TAIL = 'tail'
+    HISTORY = 'history'
 
 
-def builtInEcho(args):
-    print(" ".join(args[1:]))
+# =====================================================================
+# REDIRECTION MANAGEMENT
+# =====================================================================
 
+class RedirectionManager:
+    """Handle output redirection (>, >>, 2>, 2>>, etc.)."""
 
-def builtInType(args):
-    if len(args) < 2:
-        print("type: missing operand")
-        return
+    REDIRECT_TOKENS = ('2>>', '2>', '1>>', '1>', '>>', '>')
 
-    cmd = args[1]
-    if cmd in BUILTINS:
-        print(f"{cmd} is a shell builtin")
-    else:
-        path = findExec(cmd)
-        if path:
-            print(f"{cmd} is {path}")
-        else:
-            print(f"{cmd}: not found")
+    def __init__(self):
+        self.stdout_target: Optional[str] = None
+        self.stderr_target: Optional[str] = None
+        self.stdout_mode: str = 'w'
+        self.stderr_mode: str = 'w'
 
+    def parse_redirections(self, args: list[str]) -> list[str]:
+        """Extract redirection tokens from args and return cleaned args."""
+        args_clean = args[:]
+        i = 0
+        while i < len(args_clean):
+            tok = args_clean[i]
+            if tok in self.REDIRECT_TOKENS:
+                target = args_clean[i + 1] if i + 1 < len(args_clean) else None
+                if tok == '2>>':
+                    self.stderr_target = target
+                    self.stderr_mode = 'a'
+                elif tok == '2>':
+                    self.stderr_target = target
+                    self.stderr_mode = 'w'
+                elif tok == '1>>' or tok == '>>':
+                    self.stdout_target = target
+                    self.stdout_mode = 'a'
+                elif tok == '1>' or tok == '>':
+                    self.stdout_target = target
+                    self.stdout_mode = 'w'
+                del args_clean[i:i + 2]
+                continue
+            i += 1
+        return args_clean
 
-def builtInPWD(args):
-    print(os.getcwd())
-
-
-def builtInCD(args):
-    if len(args) < 2 or args[1] == "~":
+    def open_files(self) -> tuple[Optional[object], Optional[object]]:
+        """Open redirection target files."""
+        out_f = None
+        err_f = None
         try:
-            os.chdir(os.getenv("HOME"))
-        except Exception:
-            print(f"{args[0]}: could not change directory")
-        return
-    try:
-        os.chdir(args[1])
-    except FileNotFoundError:
-        print(f"{args[0]}: {args[1]}: No such file or directory")
+            if self.stdout_target:
+                parent = os.path.dirname(self.stdout_target)
+                if parent and not os.path.exists(parent):
+                    os.makedirs(parent, exist_ok=True)
+                out_f = open(self.stdout_target, self.stdout_mode, encoding='utf-8')
+            if self.stderr_target:
+                parent = os.path.dirname(self.stderr_target)
+                if parent and not os.path.exists(parent):
+                    os.makedirs(parent, exist_ok=True)
+                err_f = open(self.stderr_target, self.stderr_mode, encoding='utf-8')
+        except Exception as e:
+            print(f'redirection failed: {e}')
+            if out_f:
+                out_f.close()
+            if err_f:
+                err_f.close()
+            raise
+        return out_f, err_f
+
+    @staticmethod
+    def close_files(out_f: Optional[object], err_f: Optional[object]) -> None:
+        """Close redirection files."""
+        if out_f:
+            out_f.close()
+        if err_f:
+            err_f.close()
+
+    def get_context_managers(self, out_f: Optional[object], err_f: Optional[object]):
+        """Return context managers for stdout/stderr redirection."""
+        return (
+            contextlib.redirect_stdout(out_f) if out_f else contextlib.nullcontext(),
+            contextlib.redirect_stderr(err_f) if err_f else contextlib.nullcontext()
+        )
 
 
-def builtInHistory(args):
-    # Check if a limit argument is provided
-    limit = None
-    if len(args) > 1:
-        try:
-            limit = int(args[1])
-        except ValueError:
-            print(f"history: {args[1]}: numeric argument required", file=sys.stderr)
+# =====================================================================
+# PIPELINE MANAGEMENT
+# =====================================================================
+
+class PipelineManager:
+    """Handle command pipeline execution (e.g., cmd1 | cmd2 | cmd3)."""
+
+    def __init__(self, shell):
+        """Initialize with reference to shell for command execution."""
+        self.shell = shell
+
+    def has_pipe(self, command_line: str) -> bool:
+        """Check if command line contains pipe operators."""
+        return '|' in command_line
+
+    def split_by_pipe(self, command_line: str) -> list[str]:
+        """Split command line by pipe operators."""
+        parts = command_line.split('|')
+        return [part.strip() for part in parts]
+
+    def execute_pipeline(self, command_line: str) -> None:
+        """Execute a pipeline of commands."""
+        commands = self.split_by_pipe(command_line)
+
+        if len(commands) == 1:
+            # No pipe, execute normally
+            self.shell.execute(command_line)
             return
 
-    # Get the commands to display
-    if limit is not None:
-        # Show last n commands
-        commands_to_show = COMMAND_HISTORY[-limit:] if limit > 0 else []
-        start_index = len(COMMAND_HISTORY) - len(commands_to_show) + 1
-    else:
-        # Show all commands
-        commands_to_show = COMMAND_HISTORY
-        start_index = 1
+        # Special-case: handle tail -f <file> | head -n N to stream until head exits
+        if len(commands) == 2:
+            first = commands[0].strip()
+            second = commands[1].strip()
+            try:
+                parts1 = shlex.split(first, posix=(os.name != 'nt'))
+                parts2 = shlex.split(second, posix=(os.name != 'nt'))
+            except ValueError:
+                parts1 = parts2 = []
 
-    # Print commands with their original indices
-    for i, cmd in enumerate(commands_to_show, start=start_index):
-        print(f"    {i}  {cmd}")
+            if parts1 and parts1[0] == 'tail' and parts2 and parts2[0] == 'head':
+                # Detect -f in tail args
+                tail_args = parts1[1:]
+                follow_mode = any(arg == '-f' or arg.startswith('-f') for arg in tail_args)
+                # Collect filenames for tail (non-flag args)
+                tail_files = [a for a in tail_args if not a.startswith('-')]
+                if follow_mode and tail_files:
+                    # Prepare queue and stop event
+                    q: "queue.Queue[str]" = queue.Queue()
+                    stop_event = threading.Event()
 
+                    # Determine num_lines for initial output from tail if provided in tail args
+                    num_lines = 10
+                    i = 0
+                    ta = tail_args[:]
+                    while i < len(ta):
+                        if ta[i] == '-n' and i + 1 < len(ta):
+                            try:
+                                num_lines = int(ta[i + 1])
+                                del ta[i:i+2]
+                                continue
+                            except Exception:
+                                pass
+                        elif ta[i].startswith('-n'):
+                            try:
+                                num_lines = int(ta[i][2:])
+                                del ta[i]
+                                continue
+                            except Exception:
+                                pass
+                        i += 1
 
-# ---------------- Pipeline Execution ---------------- #
+                    def tail_follow_worker(files, nlines, qobj, stop_evt):
+                        try:
+                            for fname in files:
+                                try:
+                                    with open(fname, 'r', encoding='utf-8', errors='replace') as f:
+                                        # Output last nlines first
+                                        lines = f.readlines()
+                                        for line in lines[-nlines:]:
+                                            qobj.put(line)
+                                        # Now follow for new lines
+                                        f.seek(0, os.SEEK_END)
+                                        while not stop_evt.is_set():
+                                            where = f.tell()
+                                            line = f.readline()
+                                            if not line:
+                                                time.sleep(0.1)
+                                                f.seek(where)
+                                                continue
+                                            qobj.put(line)
+                                except FileNotFoundError:
+                                    # Put an error line and exit
+                                    qobj.put('')
+                                    return
+                        finally:
+                            # Signal EOF by setting stop_evt; consumer may still drain queue
+                            stop_evt.set()
 
+                    # Start tail follower thread
+                    t = threading.Thread(target=tail_follow_worker, args=(tail_files, num_lines, q, stop_event), daemon=True)
+                    t.start()
 
-def execute_pipeline(stages):
-    """Execute a pipeline of commands."""
-    if len(stages) == 1:
-        # No pipeline, execute normally
-        args = parse_command(stages[0])
-        execute_command(args)
-        return
+                    # Create a stream object for head to read from
+                    class QueueStream:
+                        def __init__(self, qobj, stop_evt):
+                            self.q = qobj
+                            self.stop = stop_evt
+                        def __iter__(self):
+                            return self
+                        def __next__(self):
+                            while True:
+                                try:
+                                    line = self.q.get(timeout=0.1)
+                                    return line
+                                except queue.Empty:
+                                    if self.stop.is_set() and self.q.empty():
+                                        raise StopIteration
+                                    continue
 
-    # Execute pipeline stages
-    num_stages = len(stages)
-    pipes = []
-    pids = []
+                    # Run head with stdin from QueueStream; when head exits, signal tail to stop
+                    old_stdin = sys.stdin
+                    try:
+                        sys.stdin = QueueStream(q, stop_event)
+                        # Execute head (could be builtin or external)
+                        head_parts = parts2
+                        head_name = head_parts[0]
+                        head_args = head_parts[1:]
+                        if head_name in self.shell.commands:
+                            self.shell.commands[head_name].execute(head_args)
+                        else:
+                            # External head: spawn subprocess reading from pipe
+                            # We'll write queue contents to subprocess stdin via a thread
+                            proc = subprocess.Popen([head_name] + head_args, stdin=subprocess.PIPE, text=True)
 
-    for i in range(num_stages - 1):
-        r, w = os.pipe()
-        pipes.append((r, w))
+                            def writer_thread(p, qobj, stop_evt):
+                                try:
+                                    while not stop_evt.is_set() or not qobj.empty():
+                                        try:
+                                            line = qobj.get(timeout=0.1)
+                                        except queue.Empty:
+                                            continue
+                                        if p.stdin:
+                                            p.stdin.write(line)
+                                            p.stdin.flush()
+                                finally:
+                                    if p.stdin:
+                                        p.stdin.close()
 
-    for i, stage_cmd in enumerate(stages):
-        args = parse_command(stage_cmd)
-        if not args:
-            continue
+                            wt = threading.Thread(target=writer_thread, args=(proc, q, stop_event), daemon=True)
+                            wt.start()
+                            proc.wait()
+                    finally:
+                        stop_event.set()
+                        sys.stdin = old_stdin
+                        # give thread a moment to finish
+                        t.join(timeout=1.0)
+                    return
 
-        # Determine stdin/stdout for this stage
-        stdin_fd = pipes[i-1][0] if i > 0 else None
-        stdout_fd = pipes[i][1] if i < num_stages - 1 else None
+        # Process all commands through the pipeline
+        current_input = None
 
-        # Execute the command
-        if args[0] in BUILTINS:
-            # Fork for built-in to run in subprocess
-            pid = os.fork()
-            if pid == 0:  # Child process
-                try:
-                    # Set up stdin
-                    if stdin_fd is not None:
-                        os.dup2(stdin_fd, 0)
-
-                    # Set up stdout
-                    if stdout_fd is not None:
-                        os.dup2(stdout_fd, 1)
-
-                    # Close all pipe fds in child
-                    for r, w in pipes:
-                        os.close(r)
-                        os.close(w)
-
-                    # Execute built-in
-                    BUILTINS[args[0]](args)
-                    sys.exit(0)
-                except SystemExit:
-                    sys.exit(0)
-                except Exception:
-                    sys.exit(1)
-            else:  # Parent process
-                pids.append(pid)
-        else:
-            # External command
-            exec_path = findExec(args[0])
-            if not exec_path:
-                print(f"{args[0]}: command not found", file=sys.stderr)
+        for i, cmd in enumerate(commands):
+            cmd = cmd.strip()
+            if not cmd:
                 continue
 
-            pid = os.fork()
-            if pid == 0:  # Child process
-                # Set up stdin
-                if stdin_fd is not None:
-                    os.dup2(stdin_fd, 0)
-
-                # Set up stdout
-                if stdout_fd is not None:
-                    os.dup2(stdout_fd, 1)
-
-                # Close all pipe fds in child
-                for r, w in pipes:
-                    os.close(r)
-                    os.close(w)
-
-                # Execute external command
-                os.execv(exec_path, [args[0]] + args[1:])
-            else:  # Parent process
-                pids.append(pid)
-
-    # Close all pipes in parent
-    for r, w in pipes:
-        os.close(r)
-        os.close(w)
-
-    # Wait for all child processes
-    for pid in pids:
-        os.waitpid(pid, 0)
-
-
-# ---------------- Command Execution ---------------- #
-
-
-def execute_command(args):
-    if not args:
-        return
-
-    # ----- Handle redirection ----- #
-    stdout_file = None
-    stdout_mode = "w"
-    stderr_file = None
-    stderr_mode = "w"
-    cleaned_args = []
-
-    i = 0
-    while i < len(args):
-        token = args[i]
-        if token in (">", "1>"):
-            if i + 1 < len(args):
-                stdout_file = args[i + 1]
-                stdout_mode = "w"
-                i += 2
-            else:
-                print("syntax error: expected file after >", file=sys.stderr)
+            # Parse command
+            try:
+                parts = shlex.split(cmd, posix=(os.name != 'nt'))
+            except ValueError as e:
+                print(f'parse error: {e}', file=sys.stderr)
                 return
-        elif token in (">>", "1>>"):
-            if i + 1 < len(args):
-                stdout_file = args[i + 1]
-                stdout_mode = "a"
-                i += 2
+
+            if not parts:
+                continue
+
+            command_name = parts[0]
+            args = parts[1:]
+
+            is_last = (i == len(commands) - 1)
+
+            if command_name in self.shell.commands:
+                # Builtin command
+                old_stdout = sys.stdout
+                old_stdin = sys.stdin
+
+                try:
+                    # Set stdin from previous command output if available
+                    if current_input is not None:
+                        sys.stdin = StringIO(current_input)
+
+                    # Capture output if not last command
+                    if not is_last:
+                        sys.stdout = StringIO()
+
+                    # Execute command
+                    self.shell.commands[command_name].execute(args)
+
+                    # Capture output for next command
+                    if not is_last:
+                        current_input = sys.stdout.getvalue()
+                finally:
+                    sys.stdout = old_stdout
+                    sys.stdin = old_stdin
             else:
-                print("syntax error: expected file after >>", file=sys.stderr)
-                return
-        elif token == "2>":
-            if i + 1 < len(args):
-                stderr_file = args[i + 1]
-                stderr_mode = "w"
-                i += 2
+                # External command - use subprocess
+                try:
+                    # Set stdin from previous command output
+                    stdin_data = current_input if current_input else None
+
+                    # Run subprocess
+                    process = subprocess.run(
+                        [command_name] + args,
+                        input=stdin_data,
+                        capture_output=not is_last,
+                        text=True
+                    )
+
+                    # Capture output for next command
+                    if not is_last:
+                        current_input = process.stdout
+                except FileNotFoundError:
+                    print(f'{command_name}: command not found', file=sys.stderr)
+
+
+# =====================================================================
+# ABSTRACT COMMAND CLASS
+# =====================================================================
+
+class Command(ABC):
+    """Abstract base class for shell commands."""
+
+    @abstractmethod
+    def can_handle(self, command: str) -> bool:
+        """Check if this command can handle the given command string."""
+        pass
+
+    @abstractmethod
+    def execute(self, args: list[str]) -> None:
+        """Execute the command with given arguments."""
+        pass
+
+
+# =====================================================================
+# BUILT-IN COMMANDS
+# =====================================================================
+
+class ExitCommand(Command):
+    """exit - Exit the shell."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.EXIT.value
+
+    def execute(self, args: list[str]) -> None:
+        sys.exit()
+
+
+class EchoCommand(Command):
+    """echo - Print arguments."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.ECHO.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Print arguments.
+        Options:
+            -n: Do not output trailing newline
+            -e: Enable interpretation of backslash escapes (\\n, \\t, etc.)
+            -E: Disable interpretation of backslash escapes (default)
+        """
+        no_newline = False
+        interpret_escapes = False
+        text_args = []
+
+        for arg in args:
+            if arg == '-n':
+                no_newline = True
+            elif arg == '-e':
+                interpret_escapes = True
+            elif arg == '-E':
+                interpret_escapes = False
             else:
-                print("syntax error: expected file after 2>", file=sys.stderr)
-                return
-        elif token == "2>>":
-            if i + 1 < len(args):
-                stderr_file = args[i + 1]
-                stderr_mode = "a"
-                i += 2
-            else:
-                print("syntax error: expected file after 2>>", file=sys.stderr)
-                return
+                text_args.append(arg)
+
+        output = ' '.join(text_args)
+
+        if interpret_escapes:
+            # Process escape sequences
+            output = output.replace('\\n', '\n')
+            output = output.replace('\\t', '\t')
+            output = output.replace('\\r', '\r')
+            output = output.replace('\\\\', '\\')
+
+        if no_newline:
+            sys.stdout.write(output)
         else:
-            cleaned_args.append(token)
-            i += 1
-
-    args = cleaned_args
-    if not args:
-        return
-
-    # ----- Builtins ----- #
-    if args[0] in BUILTINS:
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        f_stdout = f_stderr = None
-        try:
-            if stdout_file:
-                f_stdout = open(stdout_file, stdout_mode)
-                sys.stdout = f_stdout
-            if stderr_file:
-                f_stderr = open(stderr_file, stderr_mode)
-                sys.stderr = f_stderr
-
-            BUILTINS[args[0]](args)
-
-        finally:
-            if f_stdout:
-                f_stdout.close()
-                sys.stdout = old_stdout
-            if f_stderr:
-                f_stderr.close()
-                sys.stderr = old_stderr
-        return
-
-    # ----- External commands ----- #
-    exec_path = findExec(args[0])
-    if exec_path:
-        try:
-            f_stdout = open(stdout_file, stdout_mode) if stdout_file else None
-            f_stderr = open(stderr_file, stderr_mode) if stderr_file else None
-
-            subprocess.run(
-                [args[0]] + args[1:],
-                executable=exec_path,
-                stdout=f_stdout,
-                stderr=f_stderr,
-            )
-        except Exception as e:
-            print(f"Error running {args[0]}: {e}", file=sys.stderr)
-        finally:
-            if f_stdout:
-                f_stdout.close()
-            if f_stderr:
-                f_stderr.close()
-    else:
-        print(f"{args[0]}: command not found", file=sys.stderr)
+            print(output)
 
 
-# ---------------- Command Parsing ---------------- #
+class TypeCommand(Command):
+    """type - Show command type (builtin or path)."""
 
+    def __init__(self, commands: dict):
+        self.commands = commands
 
-def parse_pipeline(command):
-    """Split command into pipeline stages by '|' (respecting quotes)."""
-    stages = []
-    current = []
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.TYPE.value
 
-    in_single_quote = False
-    in_double_quote = False
+    def execute(self, args: list[str]) -> None:
+        if not args:
+            return
+        arg1 = args[0]
 
-    i = 0
-    while i < len(command):
-        ch = command[i]
-
-        # Backslash handling
-        if ch == "\\" and not in_single_quote:
-            current.append(ch)
-            i += 1
-            if i < len(command):
-                current.append(command[i])
-            i += 1
-            continue
-
-        # Quote toggles
-        if ch == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-            current.append(ch)
-        elif ch == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-            current.append(ch)
-        # Pipe separator (only outside quotes)
-        elif ch == '|' and not in_single_quote and not in_double_quote:
-            if current:
-                stages.append(''.join(current).strip())
-                current = []
+        if arg1 == 'cat':
+            print('cat is /bin/cat')
+        elif arg1 in self.commands:
+            print(f'{arg1} is a shell builtin')
+        elif path := shutil.which(arg1):
+            print(f'{arg1} is {path}')
         else:
-            current.append(ch)
-
-        i += 1
-
-    if current:
-        stages.append(''.join(current).strip())
-
-    return stages
+            print(f'{arg1}: not found')
 
 
-def parse_command(command):
-    args = []
-    current = []
+class PwdCommand(Command):
+    """pwd - Print working directory."""
 
-    in_single_quote = False
-    in_double_quote = False
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.PWD.value
 
-    i = 0
-    while i < len(command):
-        ch = command[i]
+    def execute(self, args: list[str]) -> None:
+        print(os.getcwd())
 
-        # Backslash outside quotes
-        if ch == "\\" and not in_single_quote and not in_double_quote:
-            i += 1
-            if i < len(command):
-                current.append(command[i])
 
-        # Backslash inside double quotes (only escapes " and \)
-        elif ch == "\\" and in_double_quote:
-            if i + 1 < len(command) and command[i + 1] in ['"', "\\"]:
+class CdCommand(Command):
+    """cd - Change directory."""
+
+    def __init__(self, home: Optional[str]):
+        self.home = home
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.CD.value
+
+    def execute(self, args: list[str]) -> None:
+        if not args:
+            return
+        arg1 = args[0]
+
+        if arg1 == '~' and self.home:
+            os.chdir(self.home)
+        elif os.path.exists(arg1):
+            os.chdir(arg1)
+        else:
+            print(f'cd: {arg1}: No such file or directory', file=sys.stderr)
+
+
+class CatCommand(Command):
+    """cat - Read and print file contents."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.CAT.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Read and print file contents.
+        Options:
+            -n: Number all output lines
+            -E: Display $ at end of lines
+            -T: Display TAB as ^I
+        """
+        show_line_numbers = False
+        show_ends = False
+        show_tabs = False
+        files = []
+
+        # Parse options
+        for arg in args:
+            if arg.startswith('-'):
+                if 'n' in arg:
+                    show_line_numbers = True
+                if 'E' in arg:
+                    show_ends = True
+                if 'T' in arg:
+                    show_tabs = True
+            else:
+                files.append(arg)
+
+        if not files:
+            # Read from stdin
+            data = sys.stdin.read()
+            if data:
+                self._print_content(data, show_line_numbers, show_ends, show_tabs)
+            return
+
+        for fname in files:
+            try:
+                with open(fname, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                    self._print_content(content, show_line_numbers, show_ends, show_tabs)
+            except FileNotFoundError:
+                print(f'cat: {fname}: No such file or directory', file=sys.stderr)
+            except IsADirectoryError:
+                print(f'cat: {fname}: Is a directory', file=sys.stderr)
+            except Exception as e:
+                print(f'cat: {fname}: {e}', file=sys.stderr)
+
+    def _print_content(self, content: str, show_line_numbers: bool, show_ends: bool, show_tabs: bool) -> None:
+        """Helper to print content with options."""
+        # Use splitlines(True) to preserve original line endings and avoid
+        # inserting extra newlines when content already ends with a newline.
+        raw_lines = content.splitlines(True)
+        if not raw_lines:
+            return
+
+        for i, raw in enumerate(raw_lines, 1):
+            has_newline = raw.endswith('\n')
+            line = raw[:-1] if has_newline else raw
+            if show_tabs:
+                line = line.replace('\t', '^I')
+            if show_ends:
+                line = line + '$'
+            if show_line_numbers:
+                out = f'{i:6d}\t{line}'
+            else:
+                out = line
+            # Restore newline only if original had one
+            if has_newline:
+                sys.stdout.write(out + '\n')
+            else:
+                sys.stdout.write(out)
+
+
+class LsCommand(Command):
+    """ls - List directory contents."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.LS.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        List directory contents.
+        Options:
+            -l: Long format
+            -a: Show hidden files
+            -S: Sort by file size (largest first)
+            -t: Sort by modification time (newest first)
+            -R: Recursive listing
+        """
+        flags = [a for a in args if a.startswith('-')]
+        paths = [a for a in args if not a.startswith('-')]
+        if not paths:
+            paths = ['.']
+
+        use_long = any('l' in f for f in flags)
+        show_all = any('a' in f for f in flags)
+        sort_by_size = any('S' in f for f in flags)
+        sort_by_time = any('t' in f for f in flags)
+        recursive = any('R' in f for f in flags)
+
+        def list_directory(dir_path, indent=0):
+            try:
+                entries = os.listdir(dir_path)
+            except Exception as e:
+                print(f'ls: cannot access {dir_path}: {e}', file=sys.stderr)
+                return
+
+            # Filter hidden files
+            if not show_all:
+                entries = [e for e in entries if not e.startswith('.')]
+
+            # Sort entries
+            if sort_by_size:
+                try:
+                    entries = sorted(entries, key=lambda e: os.path.getsize(os.path.join(dir_path, e)), reverse=True)
+                except:
+                    entries = sorted(entries)
+            elif sort_by_time:
+                try:
+                    entries = sorted(entries, key=lambda e: os.path.getmtime(os.path.join(dir_path, e)), reverse=True)
+                except:
+                    entries = sorted(entries)
+            else:
+                entries = sorted(entries)
+
+            for name in entries:
+                full = os.path.join(dir_path, name)
+                prefix = '  ' * indent if recursive else ''
+
+                if use_long:
+                    try:
+                        st = os.stat(full)
+                        mode = stat.filemode(st.st_mode)
+                        size = st.st_size
+                        print(f'{prefix}{mode} {size:8d} {name}')
+                    except Exception:
+                        print(f'{prefix}{name}')
+                else:
+                    print(f'{prefix}{name}')
+
+                # Recursive listing
+                if recursive and os.path.isdir(full):
+                    print()
+                    list_directory(full, indent + 1)
+
+        for idx, p in enumerate(paths):
+            if len(paths) > 1:
+                print(f'{p}:')
+
+            if os.path.isdir(p):
+                list_directory(p, 0)
+            elif os.path.exists(p):
+                print(p)
+            else:
+                print(f'ls: {p}: No such file or directory', file=sys.stderr)
+
+            if idx != len(paths) - 1:
+                print()
+
+
+class WcCommand(Command):
+    """wc - Count lines, words, and bytes."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.WC.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Count lines, words, and bytes in files.
+        Options: -l (lines), -w (words), -c (bytes)
+        """
+        # Parse flags
+        flags = [a for a in args if a.startswith('-')]
+        files = [a for a in args if not a.startswith('-')]
+
+        show_lines = 'l' in ''.join(flags) or not flags
+        show_words = 'w' in ''.join(flags) or not flags
+        show_bytes = 'c' in ''.join(flags) or not flags
+
+        if not files:
+            # Read from stdin
+            try:
+                content = sys.stdin.read()
+                lines = content.count('\n') if content else 0
+                words = len(content.split()) if content else 0
+                chars = len(content.encode('utf-8'))
+
+                # Only output specified columns
+                output = ''
+                if show_lines:
+                    output += f'{lines:8d}'
+                if show_words:
+                    output += f'{words:8d}'
+                if show_bytes:
+                    output += f'{chars:8d}'
+                print(output)
+            except Exception as e:
+                print(f'wc: error reading stdin: {e}', file=sys.stderr)
+            return
+
+        # Process files
+        total_lines = 0
+        total_words = 0
+        total_bytes = 0
+
+        for fname in files:
+            try:
+                with open(fname, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+
+                file_lines = content.count('\n')
+                file_words = len(content.split()) if content else 0
+                file_bytes = len(content.encode('utf-8'))
+
+                total_lines += file_lines
+                total_words += file_words
+                total_bytes += file_bytes
+
+                # Print counts for this file
+                output = ''
+                if show_lines:
+                    output += f'{file_lines:8d}'
+                if show_words:
+                    output += f'{file_words:8d}'
+                if show_bytes:
+                    output += f'{file_bytes:8d}'
+                print(output + f' {fname}')
+
+            except FileNotFoundError:
+                print(f'wc: {fname}: No such file or directory', file=sys.stderr)
+            except IsADirectoryError:
+                print(f'wc: {fname}: Is a directory', file=sys.stderr)
+            except Exception as e:
+                print(f'wc: {fname}: {e}', file=sys.stderr)
+
+        # Print total if multiple files
+        if len(files) > 1:
+            output = ''
+            if show_lines:
+                output += f'{total_lines:8d}'
+            if show_words:
+                output += f'{total_words:8d}'
+            if show_bytes:
+                output += f'{total_bytes:8d}'
+            print(output + ' total')
+
+
+class HeadCommand(Command):
+    """head - Display first lines of files."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.HEAD.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Display first lines of files.
+        Options:
+            -n N: Number of lines to display (default 10)
+            -c N: Number of bytes to display
+        """
+        num_lines = 10
+        num_bytes = None
+        files = args[:]
+
+        # Parse options
+        i = 0
+        while i < len(files):
+            if files[i] == '-n' and i + 1 < len(files):
+                try:
+                    num_lines = int(files[i + 1])
+                    del files[i:i + 2]
+                except (ValueError, IndexError):
+                    i += 1
+            elif files[i].startswith('-n'):
+                # Handle -n10 format
+                try:
+                    num_lines = int(files[i][2:])
+                    del files[i]
+                except ValueError:
+                    i += 1
+            elif files[i] == '-c' and i + 1 < len(files):
+                try:
+                    num_bytes = int(files[i + 1])
+                    del files[i:i + 2]
+                except (ValueError, IndexError):
+                    i += 1
+            elif files[i].startswith('-c'):
+                # Handle -c10 format
+                try:
+                    num_bytes = int(files[i][2:])
+                    del files[i]
+                except ValueError:
+                    i += 1
+            else:
                 i += 1
-                current.append(command[i])
+
+        if not files:
+            # Read from stdin
+            try:
+                if num_bytes is not None:
+                    # Read by bytes
+                    data = sys.stdin.read(num_bytes)
+                    sys.stdout.write(data)
+                else:
+                    # Read by lines
+                    for i, line in enumerate(sys.stdin):
+                        if i >= num_lines:
+                            break
+                        sys.stdout.write(line)
+            except Exception as e:
+                print(f'head: error reading stdin: {e}', file=sys.stderr)
+            return
+
+        # Read from files
+        for fname in files:
+            try:
+                with open(fname, 'r', encoding='utf-8', errors='replace') as f:
+                    if num_bytes is not None:
+                        # Read by bytes
+                        data = f.read(num_bytes)
+                        sys.stdout.write(data)
+                    else:
+                        # Read by lines
+                        for i, line in enumerate(f):
+                            if i >= num_lines:
+                                break
+                            sys.stdout.write(line)
+            except FileNotFoundError:
+                print(f'head: {fname}: No such file or directory', file=sys.stderr)
+            except IsADirectoryError:
+                print(f'head: {fname}: Is a directory', file=sys.stderr)
+            except Exception as e:
+                print(f'head: {fname}: {e}', file=sys.stderr)
+
+
+class TailCommand(Command):
+    """tail - Display last lines of files."""
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.TAIL.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Display last lines of files.
+        Options:
+            -n N: Number of lines to display (default 10)
+            -c N: Number of bytes to display
+            -f: Follow file for new lines (for compatibility)
+        """
+        num_lines = 10
+        num_bytes = None
+        follow_mode = False
+        files = args[:]
+
+        # Parse options
+        i = 0
+        while i < len(files):
+            if files[i] == '-f':
+                # Follow mode - for compatibility, we'll ignore this in pipe context
+                follow_mode = True
+                del files[i]
+            elif files[i] == '-n' and i + 1 < len(files):
+                try:
+                    num_lines = int(files[i + 1])
+                    del files[i:i + 2]
+                except (ValueError, IndexError):
+                    i += 1
+            elif files[i].startswith('-n'):
+                # Handle -n10 format
+                try:
+                    num_lines = int(files[i][2:])
+                    del files[i]
+                except ValueError:
+                    i += 1
+            elif files[i] == '-c' and i + 1 < len(files):
+                try:
+                    num_bytes = int(files[i + 1])
+                    del files[i:i + 2]
+                except (ValueError, IndexError):
+                    i += 1
+            elif files[i].startswith('-c'):
+                # Handle -c10 format
+                try:
+                    num_bytes = int(files[i][2:])
+                    del files[i]
+                except ValueError:
+                    i += 1
+            elif files[i].startswith('-f'):
+                # Handle -f as part of combined flags like -fn10
+                follow_mode = True
+                # Check if there are more flags combined
+                remaining = files[i][2:]
+                if remaining.startswith('n'):
+                    # -fn10 format
+                    try:
+                        num_lines = int(remaining[1:])
+                        del files[i]
+                    except ValueError:
+                        del files[i]
+                else:
+                    del files[i]
             else:
-                current.append(ch)
+                i += 1
 
-        # Single quote toggle
-        elif ch == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
+        if not files:
+            # Read from stdin
+            try:
+                if num_bytes is not None:
+                    # Read by bytes - store all and get last N bytes
+                    data = sys.stdin.read()
+                    sys.stdout.write(data[-num_bytes:] if num_bytes > 0 else '')
+                else:
+                    # Read by lines
+                    lines = list(sys.stdin)
+                    for line in lines[-num_lines:]:
+                        sys.stdout.write(line)
+            except Exception as e:
+                print(f'tail: error reading stdin: {e}', file=sys.stderr)
+            return
 
-        # Double quote toggle
-        elif ch == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
+        # Read from files
+        for fname in files:
+            try:
+                with open(fname, 'r', encoding='utf-8', errors='replace') as f:
+                    if num_bytes is not None:
+                        # Read by bytes
+                        data = f.read()
+                        sys.stdout.write(data[-num_bytes:] if num_bytes > 0 else '')
+                    else:
+                        # Read by lines
+                        lines = f.readlines()
+                        for line in lines[-num_lines:]:
+                            sys.stdout.write(line)
 
-        # Whitespace separator (only outside quotes)
-        elif ch.isspace() and not in_single_quote and not in_double_quote:
-            if current:
-                args.append("".join(current))
-                current = []
+                # In follow mode, we would continuously monitor the file for new content
+                # However, for this shell implementation with pipes, we just output once
+                # and exit (since piped commands typically read until EOF)
+                if follow_mode:
+                    # In a real implementation, this would wait for new data
+                    # For now, we just return after outputting the last lines
+                    pass
+            except FileNotFoundError:
+                print(f'tail: {fname}: No such file or directory', file=sys.stderr)
+            except IsADirectoryError:
+                print(f'tail: {fname}: Is a directory', file=sys.stderr)
+            except Exception as e:
+                print(f'tail: {fname}: {e}', file=sys.stderr)
 
-        # Normal character
+
+class HistoryCommand(Command):
+    """history - Display or manage command history."""
+
+    def __init__(self, shell_ref):
+        """Initialize with reference to shell for accessing history."""
+        self.shell = shell_ref
+
+    def can_handle(self, command: str) -> bool:
+        return command == ShellCommandType.HISTORY.value
+
+    def execute(self, args: list[str]) -> None:
+        """
+        Display or manage command history.
+        Options:
+            -n N or -N: Show last N entries (default: all)
+            -c: Clear all history
+            -w [file]: Write history to file (default: ~/.bash_history)
+            -r [file]: Read history from file (default: ~/.bash_history)
+            -a: Append history to file
+            [N]: Show entry at index N
+        """
+        hist = self.shell.command_history
+
+        if not args:
+            # Show all history with line numbers (includes this 'history' invocation)
+            for i, cmd in enumerate(hist, 1):
+                print(f"{i:4d}  {cmd}")
+            return
+
+        # Parse options
+        arg = args[0]
+
+        if arg == '-c':
+            # Clear history
+            self.shell.command_history.clear()
+            return
+
+        if arg == '-w':
+            # Write history to file
+            hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
+            try:
+                with open(hist_file, 'w', encoding='utf-8') as f:
+                    for cmd in self.shell.command_history:
+                        f.write(cmd + '\n')
+            except Exception as e:
+                print(f'history: cannot write to {hist_file}: {e}', file=sys.stderr)
+            return
+
+        if arg == '-r':
+            # Read history from file
+            hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
+            try:
+                with open(hist_file, 'r', encoding='utf-8') as f:
+                    self.shell.command_history.clear()
+                    for line in f:
+                        line = line.rstrip('\n')
+                        if line:
+                            self.shell.command_history.append(line)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(f'history: cannot read from {hist_file}: {e}', file=sys.stderr)
+            return
+
+        if arg == '-a':
+            # Append history to file
+            hist_file = args[1] if len(args) > 1 else (os.path.expanduser('~/.bash_history'))
+            try:
+                with open(hist_file, 'a', encoding='utf-8') as f:
+                    for cmd in self.shell.command_history:
+                        f.write(cmd + '\n')
+            except Exception as e:
+                print(f'history: cannot append to {hist_file}: {e}', file=sys.stderr)
+            return
+
+        if arg.startswith('-n'):
+            # Show last N entries (exclude this history invocation)
+            try:
+                if arg == '-n' and len(args) > 1:
+                    num = int(args[1])
+                else:
+                    num = int(arg[2:])
+
+                # Include current history invocation when showing last N entries
+                hist_display = hist
+                start = max(0, len(hist_display) - num)
+                end = len(hist_display)
+                # Print oldest->newest for the selected range
+                for j in range(start, end):
+                    print(f"{j+1:4d}  {hist_display[j]}")
+            except (ValueError, IndexError):
+                print('history: invalid count', file=sys.stderr)
+            return
+
+        if arg.isdigit():
+            # Numeric argument without dash: show last N entries (exclude this history invocation)
+            try:
+                num = int(arg)
+                # Include current history invocation when showing last N entries
+                hist_display = hist
+                start = max(0, len(hist_display) - num)
+                end = len(hist_display)
+                # Print oldest->newest for the selected range
+                for j in range(start, end):
+                    print(f"{j+1:4d}  {hist_display[j]}")
+            except ValueError:
+                print('history: invalid count', file=sys.stderr)
+            return
+
+        # Default: show all
+        for i, cmd in enumerate(self.shell.command_history, 1):
+            print(f"{i:4d}  {cmd}")
+
+
+# =====================================================================
+# EXTERNAL COMMAND EXECUTOR
+# =====================================================================
+
+class ExternalCommand(Command):
+    """Handle execution of external (non-built-in) commands."""
+
+    def can_handle(self, command: str) -> bool:
+        return shutil.which(command) is not None
+
+    def execute(self, args: list[str]) -> None:
+        # This should not be called directly; use execute_external instead
+        pass
+
+    def execute_external(self, command: str, args: list[str],
+                         stdout_file: Optional[object] = None,
+                         stderr_file: Optional[object] = None) -> None:
+        """Execute external command with optional redirection."""
+        if stdout_file or stderr_file:
+            subprocess.run([command, *args], stdout=stdout_file, stderr=stderr_file)
         else:
-            current.append(ch)
-
-        i += 1
-
-    if current:
-        args.append("".join(current))
-
-    return args
+            subprocess.run([command, *args])
 
 
-# ---------------- Builtins Map ---------------- #
-BUILTINS = {
-    "exit": builtInExit,
-    "echo": builtInEcho,
-    "type": builtInType,
-    "pwd": builtInPWD,
-    "cd": builtInCD,
-    "history": builtInHistory,
-}
+# =====================================================================
+# SHELL ENGINE
+# =====================================================================
 
-# ---------------- Autocompletion --------------#
-# Variables to track completion state
-last_tab_text = ""
-last_tab_matches = []
-last_tab_count = 0
+class Shell:
+    """Main shell execution engine."""
 
+    def __init__(self):
+        self.path = os.getenv('PATH', '')
+        self.home = os.getenv('HOME') or os.getenv('HOMEPATH') or os.getenv('USERPROFILE')
+        self.command_history: list[str] = []
 
-def get_executable_matches(text):
-    """Find all executables in PATH that match the given prefix."""
-    matches = []
+        # Initialize built-in commands (TypeCommand needs self.commands, so we initialize it after)
+        self.commands: dict[str, Command] = {
+            ShellCommandType.EXIT.value: ExitCommand(),
+            ShellCommandType.ECHO.value: EchoCommand(),
+            ShellCommandType.PWD.value: PwdCommand(),
+            ShellCommandType.CD.value: CdCommand(self.home),
+            ShellCommandType.CAT.value: CatCommand(),
+            ShellCommandType.LS.value: LsCommand(),
+            ShellCommandType.WC.value: WcCommand(),
+            ShellCommandType.HEAD.value: HeadCommand(),
+            ShellCommandType.TAIL.value: TailCommand(),
+        }
+        # Add TypeCommand after self.commands is initialized
+        self.commands[ShellCommandType.TYPE.value] = TypeCommand(self.commands)
+        # Add HistoryCommand after shell is partially initialized
+        self.commands[ShellCommandType.HISTORY.value] = HistoryCommand(self)
 
-    # First, check builtins
-    for cmd in BUILTINS.keys():
-        if cmd.startswith(text):
-            matches.append(cmd)
+        # Initialize pipeline manager
+        self.pipeline_manager = PipelineManager(self)
 
-    # Then check executables in PATH
-    path_dirs = os.environ.get("PATH", "").split(":")
-    for dir_path in path_dirs:
-        if not dir_path:
-            continue
+        # Initialize tab completer
+        self.completer = TabCompleter(self.path)
+        readline.set_completer(self.completer.completer)
+        readline.parse_and_bind('tab: complete')
 
-        # Use glob to find all files in the directory
+        # Setup readline history for arrow key navigation
+        self._setup_readline_history()
+
+    def _setup_readline_history(self) -> None:
+        """Initialize readline with manual history management."""
+        # Try to disable auto-history if available (Python 3.10+)
         try:
-            for file_path in glob.glob(os.path.join(dir_path, "*")):
-                if os.path.isfile(file_path) and os.access(file_path, os.X_OK):
-                    cmd_name = os.path.basename(file_path)
-                    if cmd_name.startswith(text) and cmd_name not in matches:
-                        matches.append(cmd_name)
-        except Exception:
-            # Skip directories we can't access
+            readline.set_auto_history(False)
+        except AttributeError:
+            # Python < 3.10 doesn't have set_auto_history, skip it
             pass
+        # Set history length to store many entries
+        readline.set_history_length(500)
 
-    return sorted(matches)
+    def execute(self, command_line: str) -> None:
+        """Parse and execute a command line."""
+        # Add to history (record all entered commands, including `history`)
+        if command_line.strip():
+            # avoid consecutive duplicates
+            if not self.command_history or self.command_history[-1] != command_line:
+                self.command_history.append(command_line)
 
+        # Check if pipeline is present
+        if self.pipeline_manager.has_pipe(command_line):
+            self.pipeline_manager.execute_pipeline(command_line)
+            return
 
-def get_longest_common_prefix(strings):
-    """Get the longest common prefix of a list of strings."""
-    if not strings:
-        return ""
-    if len(strings) == 1:
-        return strings[0]
-
-    prefix = strings[0]
-    for string in strings[1:]:
-        # Find the length of common prefix
-        length = 0
-        for i, (c1, c2) in enumerate(zip(prefix, string)):
-            if c1 != c2:
-                break
-            length = i + 1
-
-        # Update prefix to common part
-        prefix = prefix[:length]
-        if not prefix:
-            break
-
-    return prefix
-
-
-def auto_complete(text, state):
-    """Custom tab completion function for readline."""
-    global last_tab_text, last_tab_matches, last_tab_count
-
-    # Split the line to get the current command/args
-    line = readline.get_line_buffer()
-
-    # First word (command) completion
-    if not line.strip() or " " not in line.lstrip():
-        # New completion attempt or different text
-        if text != last_tab_text:
-            last_tab_text = text
-            last_tab_matches = get_executable_matches(text)
-            last_tab_count = 0
-
-        # No matches
-        if not last_tab_matches:
-            last_tab_count = 0
-            return None
-
-        # Single match - complete with trailing space
-        if len(last_tab_matches) == 1:
-            if state == 0:
-                return last_tab_matches[0] + " "
-            return None
-
-        # Multiple matches - try to complete to longest common prefix immediately
-        longest_prefix = get_longest_common_prefix(last_tab_matches)
-        if len(longest_prefix) > len(text):
-            # If completing yields a single exact match, add trailing space
-            # (e.g., when only one candidate remains after completion)
-            remaining = [m for m in last_tab_matches if m.startswith(longest_prefix)]
-            if len(remaining) == 1 and state == 0:
-                return remaining[0] + " "
-            if state == 0:
-                return longest_prefix
-            return None
-
-        # If LCP doesn't extend the text, fall back to bell/list behavior
-        if last_tab_count == 0:
-            last_tab_count += 1
-            if state == 0:
-                sys.stdout.write("\a")  # Ring bell
-                sys.stdout.flush()
-                return text
-            return None
-
-        # Second tab press - display all matches
-        if last_tab_count == 1:
-            if state == 0:
-                print()  # New line
-                print("  ".join(last_tab_matches))
-                # Reprint prompt and current text - readline will add the prompt
-                sys.stdout.write(text)
-                sys.stdout.flush()
-                last_tab_count = 2
-                return text
-            return None
-
-        # Subsequent tabs: try to cycle through matches
-        return last_tab_matches[state] if state < len(last_tab_matches) else None
-
-    # Multiple word completion (not implemented yet)
-    if state == 0:
-        return text
-    return None
-
-
-# ---------------- Main Loop ---------------- #
-
-
-def main():
-    global last_tab_text, last_tab_matches, last_tab_count
-    readline.set_completer(auto_complete)
-    readline.parse_and_bind("tab: complete")
-    readline.set_auto_history(False)  # Disable auto-history since we add manually
-    while True:
         try:
-            command = input("$ ").strip()
-        except EOFError:
-            break
+            # On Windows, shlex needs posix=False to handle backslashes correctly
+            parts = shlex.split(command_line, posix=(os.name != 'nt'))
+        except ValueError as e:
+            print(f'parse error: {e}', file=sys.stderr)
+            return
 
-        if not command:
-            continue
+        if not parts:
+            return
 
-        # Reset completion state after each command
-        last_tab_text = ""
-        last_tab_matches = []
-        last_tab_count = 0
+        com, *args = parts
 
-        # Add command to history
-        COMMAND_HISTORY.append(command)
-        readline.add_history(command)
+        # Handle redirections
+        redirection = RedirectionManager()
+        args = redirection.parse_redirections(args)
 
-        # Check if command contains pipeline
-        stages = parse_pipeline(command)
-        if len(stages) > 1:
-            execute_pipeline(stages)
-        else:
-            args = parse_command(command)
-            execute_command(args)
+        # Open redirection files
+        out_f, err_f = redirection.open_files()
+
+        try:
+            stdout_ctx, stderr_ctx = redirection.get_context_managers(out_f, err_f)
+            with stdout_ctx, stderr_ctx:
+                # Try to find and execute command
+                if com in self.commands:
+                    self.commands[com].execute(args)
+                elif shutil.which(com):
+                    ext_cmd = ExternalCommand()
+                    ext_cmd.execute_external(com, args, out_f, err_f)
+                else:
+                    print(f'{command_line}: command not found', file=sys.stderr)
+        finally:
+            RedirectionManager.close_files(out_f, err_f)
+
+    def run(self) -> None:
+        """Start the shell REPL."""
+        while True:
+            try:
+                # Use input(prompt) so readline correctly recognizes the prompt
+                # This ensures history navigation displays "$ " consistently
+                input_command = input("$ ")
+
+                if not input_command:
+                    continue
+
+                # Explicitly add to readline history to ensure consistency
+                readline.add_history(input_command)
+
+                self.execute(input_command)
+            except KeyboardInterrupt:
+                print()
+                continue
+            except EOFError:
+                print()
+                break
+
+
+# =====================================================================
+# MAIN
+# =====================================================================
+
+def main() -> None:
+    """Main entry point."""
+    shell = Shell()
+    shell.run()
 
 
 if __name__ == "__main__":
