@@ -440,10 +440,17 @@ class Command(ABC):
 class ExitCommand(Command):
     """exit - Exit the shell."""
 
+    def __init__(self, shell_ref=None):
+        """Initialize with optional shell reference for cleanup."""
+        self.shell = shell_ref
+
     def can_handle(self, command: str) -> bool:
         return command == ShellCommandType.EXIT.value
 
     def execute(self, args: list[str]) -> None:
+        # Save history before exiting if shell reference is available
+        if self.shell:
+            self.shell._save_history_on_exit()
         sys.exit()
 
 
@@ -1163,7 +1170,6 @@ class Shell:
 
         # Initialize built-in commands (TypeCommand needs self.commands, so we initialize it after)
         self.commands: dict[str, Command] = {
-            ShellCommandType.EXIT.value: ExitCommand(),
             ShellCommandType.ECHO.value: EchoCommand(),
             ShellCommandType.PWD.value: PwdCommand(),
             ShellCommandType.CD.value: CdCommand(self.home),
@@ -1173,6 +1179,8 @@ class Shell:
             ShellCommandType.HEAD.value: HeadCommand(),
             ShellCommandType.TAIL.value: TailCommand(),
         }
+        # Add ExitCommand with shell reference for cleanup
+        self.commands[ShellCommandType.EXIT.value] = ExitCommand(self)
         # Add TypeCommand after self.commands is initialized
         self.commands[ShellCommandType.TYPE.value] = TypeCommand(self.commands)
         # Add HistoryCommand after shell is partially initialized
@@ -1218,6 +1226,23 @@ class Shell:
                 self.history_file_positions[histfile] = len(self.command_history)
             except Exception:
                 # Silently ignore errors loading history file on startup
+                pass
+
+    def _save_history_on_exit(self) -> None:
+        """Save new history commands to $HISTFILE on exit."""
+        histfile = os.getenv('HISTFILE')
+        if histfile:
+            try:
+                # Get the position where we last synchronized with this file
+                last_pos = self.history_file_positions.get(histfile, 0)
+
+                # Only append commands that are new since startup
+                if last_pos < len(self.command_history):
+                    with open(histfile, 'a', encoding='utf-8') as f:
+                        for cmd in self.command_history[last_pos:]:
+                            f.write(cmd + '\n')
+            except Exception:
+                # Silently ignore errors saving history on exit
                 pass
 
     def execute(self, command_line: str) -> None:
