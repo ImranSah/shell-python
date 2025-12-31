@@ -1024,7 +1024,7 @@ class HistoryCommand(Command):
         if not args:
             # Show all history with line numbers (includes this 'history' invocation)
             for i, cmd in enumerate(hist, 1):
-                print(f"{i:4d}  {cmd}")
+                print(f"{i:5d}  {cmd}")
             return
 
         # Parse options
@@ -1087,7 +1087,7 @@ class HistoryCommand(Command):
                 end = len(hist_display)
                 # Print oldest->newest for the selected range
                 for j in range(start, end):
-                    print(f"{j+1:4d}  {hist_display[j]}")
+                    print(f"{j+1:5d}  {hist_display[j]}")
             except (ValueError, IndexError):
                 print('history: invalid count', file=sys.stderr)
             return
@@ -1102,14 +1102,14 @@ class HistoryCommand(Command):
                 end = len(hist_display)
                 # Print oldest->newest for the selected range
                 for j in range(start, end):
-                    print(f"{j+1:4d}  {hist_display[j]}")
+                    print(f"{j+1:5d}  {hist_display[j]}")
             except ValueError:
                 print('history: invalid count', file=sys.stderr)
             return
 
         # Default: show all
         for i, cmd in enumerate(self.shell.command_history, 1):
-            print(f"{i:4d}  {cmd}")
+            print(f"{i:5d}  {cmd}")
 
 
 # =====================================================================
