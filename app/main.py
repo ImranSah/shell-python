@@ -513,8 +513,8 @@ def auto_complete(text, state):
             if state == 0:
                 print()  # New line
                 print("  ".join(last_tab_matches))
-                # Reprint prompt and current text (include leading "$ ")
-                sys.stdout.write(f"$ {text}")
+                # Reprint prompt and current text - readline will add the prompt
+                sys.stdout.write(text)
                 sys.stdout.flush()
                 last_tab_count = 2
                 return text
@@ -533,8 +533,10 @@ def auto_complete(text, state):
 
 
 def main():
+    global last_tab_text, last_tab_matches, last_tab_count
     readline.set_completer(auto_complete)
     readline.parse_and_bind("tab: complete")
+    readline.set_auto_history(False)  # Disable auto-history since we add manually
     while True:
         try:
             command = input("$ ").strip()
@@ -543,6 +545,11 @@ def main():
 
         if not command:
             continue
+
+        # Reset completion state after each command
+        last_tab_text = ""
+        last_tab_matches = []
+        last_tab_count = 0
 
         # Add command to history
         COMMAND_HISTORY.append(command)
