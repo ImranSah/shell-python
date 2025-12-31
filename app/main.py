@@ -239,7 +239,7 @@ BUILTINS = {
 
 def auto_complete(text, state):
     matches = [
-        command + " " for command in BUILTINS.keys if command.startswith(text)]
+        command + " " for command in BUILTINS.keys() if command.startswith(text)]
     return matches[state] if state < len(matches) else None
 
 # ---------------- Main Loop ---------------- #
