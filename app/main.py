@@ -236,6 +236,34 @@ BUILTINS = {
 }
 
 # ---------------- Autocompletion --------------#
+# Variables to track completion state
+last_tab_text = ""
+last_tab_matches = []
+last_tab_count = 0
+
+
+def get_longest_common_prefix(strings):
+    """Get the longest common prefix of a list of strings."""
+    if not strings:
+        return ""
+    if len(strings) == 1:
+        return strings[0]
+
+    prefix = strings[0]
+    for string in strings[1:]:
+        # Find the length of common prefix
+        length = 0
+        for i, (c1, c2) in enumerate(zip(prefix, string)):
+            if c1 != c2:
+                break
+            length = i + 1
+
+        # Update prefix to common part
+        prefix = prefix[:length]
+        if not prefix:
+            break
+
+    return prefix
 
 
 def auto_complete(text, state):
@@ -249,6 +277,30 @@ def auto_complete(text, state):
                     os.path.join(path, file), os.X_OK
                 ):
                     matches.append(file + " ")
+
+    # Multiple matches
+    if last_tab_count == 0:
+        # First tab press - increment counter, ring bell, return the text
+        last_tab_count += 1
+        if state == 0:
+            sys.stdout.write('\a')  # Ring bell
+            sys.stdout.flush()
+            return text
+        return None
+    else:
+        # Second tab press - display all matches
+        if state == 0:
+            print()  # New line
+            print("  ".join(last_tab_matches))
+            sys.stdout.write(f"$ {text}")
+            sys.stdout.flush()
+            return text
+
+        # Complete to longest common prefix
+        longest_prefix = get_longest_common_prefix(last_tab_matches)
+        if len(longest_prefix) > len(text) and state == 0:
+            return longest_prefix
+
     return matches[state] if state < len(matches) else None
 
 
